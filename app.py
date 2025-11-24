@@ -171,7 +171,7 @@ def generate_llm_response(
     max_new_tokens: int = MAX_NEW_TOKENS
 ) -> str:
     """
-    Generate a response from TinyLlama using model.generate().
+    Generate a response from TinyLlama using plain-text prompting with truncation.
     
     Args:
         system_prompt: System instructions for the model
@@ -181,25 +181,27 @@ def generate_llm_response(
     Returns:
         The model's response as a string
     """
-    # Build messages list with system prompt
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(conversation)
+    # Get only the last user turn (which contains the RAG context + question)
+    last_user_content = conversation[-1]["content"] if conversation else ""
     
-    # Apply chat template
-    input_ids = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt"
+    # Build a simple plain-text prompt
+    prompt_text = f"{system_prompt}\n\n{last_user_content}\n\nAnswer in clear, simple language:\n"
+    
+    # Tokenize with truncation to keep input manageable
+    inputs = tokenizer(
+        prompt_text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=1024  # keep total input reasonably small
     ).to(model.device)
     
-    # Create attention mask
-    attention_mask = torch.ones_like(input_ids, dtype=torch.long).to(model.device)
+    print(f"Prompt tokens: {inputs['input_ids'].shape[1]}")
     
     # Generate response
     with torch.no_grad():
         outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
             max_new_tokens=max_new_tokens,
             do_sample=True,
             temperature=TEMPERATURE,
@@ -208,7 +210,7 @@ def generate_llm_response(
         )
     
     # Decode only the newly generated tokens
-    generated = outputs[0][input_ids.shape[1]:]
+    generated = outputs[0][inputs["input_ids"].shape[1]:]
     response = tokenizer.decode(generated, skip_special_tokens=True).strip()
     
     return response
@@ -225,8 +227,13 @@ def answer_question(user_message: str, chat_history: List[List[str]]) -> str:
     Returns:
         The assistant's answer
     """
+    print("\n=== New question ===")
+    print("User:", user_message)
+    
     # Step 1: Retrieve relevant context
+    print("Retrieving context...")
     retrieval_result = retrieve_context(user_message, k=TOP_K_RETRIEVAL)
+    print("Context retrieved.")
     combined_context = retrieval_result['combined_context']
     
     # Step 2: Define system prompt
@@ -263,10 +270,16 @@ If something is missing from the context, say that you don't know and suggest th
     conversation.append({"role": "user", "content": current_user_content})
     
     # Step 5: Generate response
+    # Keep only the last user turn (which has the context + question)
+    conversation_for_llm = [conversation[-1]]
+    
+    print("Calling generate_llm_response...")
     try:
-        answer = generate_llm_response(system_prompt, conversation, max_new_tokens=MAX_NEW_TOKENS)
+        answer = generate_llm_response(system_prompt, conversation_for_llm, max_new_tokens=MAX_NEW_TOKENS)
+        print("Generation done.")
         return answer
     except Exception as e:
+        print("Generation error:", e)
         return f"Sorry, I encountered an error while generating the answer: {str(e)}"
 
 
