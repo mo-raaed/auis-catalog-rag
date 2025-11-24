@@ -193,15 +193,19 @@ def generate_llm_response(
         return_tensors="pt"
     ).to(model.device)
     
-    # Generate response
+    # Create attention mask
+    attention_mask = torch.ones_like(input_ids).to(model.device)
+    
+    # Generate response with optimized settings for speed
     with torch.no_grad():
         outputs = model.generate(
             input_ids,
+            attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            pad_token_id=tokenizer.eos_token_id
+            do_sample=False,  # Greedy decoding is faster
+            pad_token_id=tokenizer.eos_token_id,
+            num_beams=1,  # No beam search for speed
+            early_stopping=True
         )
     
     # Decode response
@@ -304,18 +308,15 @@ def main():
                 "What are the credit hour requirements for graduation?",
                 "What is the academic probation policy?",
                 "Can I take more than 18 credits in a semester?"
-            ],
-            theme=gr.themes.Soft(),
-            retry_btn="Retry",
-            undo_btn="Undo",
-            clear_btn="Clear"
+            ]
         )
         
         # Launch the app
         demo.launch(
             share=False,  # Set to True if you want a public link
             server_name="127.0.0.1",
-            server_port=7860
+            server_port=7861,  # Use different port to avoid conflicts
+            inbrowser=True  # Auto-open in browser
         )
         
     except FileNotFoundError as e:

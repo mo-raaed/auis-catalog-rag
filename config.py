@@ -9,20 +9,20 @@ CHROMA_DB_PATH = "./chroma_db"
 COLLECTION_NAME = "auis_catalog"
 
 # Chunking parameters
-CHUNK_SIZE = 800  # characters per chunk
-CHUNK_OVERLAP = 100  # overlap between consecutive chunks
+CHUNK_SIZE = 1200  # characters per chunk (larger = fewer chunks = faster)
+CHUNK_OVERLAP = 50  # overlap between consecutive chunks (reduced for speed)
 
 # Embedding model
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # LLM configuration
 LLM_MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
-MAX_NEW_TOKENS = 512
-TEMPERATURE = 0.3
+MAX_NEW_TOKENS = 200  # Reduced for faster generation
+TEMPERATURE = 0.7
 TOP_P = 0.9
 
 # RAG parameters
-TOP_K_RETRIEVAL = 4  # number of relevant chunks to retrieve
+TOP_K_RETRIEVAL = 2  # number of relevant chunks to retrieve (reduced for speed)
 
 # Gradio UI
 APP_TITLE = "AUIS Academic Catalog Assistant"

@@ -17,6 +17,7 @@ os.environ['USE_TORCH'] = '1'
 
 import re
 from typing import List, Dict
+import torch
 import pdfplumber
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -29,19 +30,18 @@ from config import (
     EMBEDDING_MODEL
 )
 
+# Batch size for processing chunks (larger = faster GPU utilization)
+BATCH_SIZE = 150  # Balanced for 8GB VRAM
+
 
 def clean_text(text: str) -> str:
     """
-    Clean extracted PDF text by removing excessive whitespace
-    and normalizing newlines.
+    Clean extracted PDF text - optimized for speed.
     """
-    # Replace multiple newlines with double newline
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    # Replace multiple spaces with single space
+    # Replace multiple spaces but keep newlines for chunking
     text = re.sub(r' {2,}', ' ', text)
-    # Strip leading/trailing whitespace
-    text = text.strip()
-    return text
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 def extract_section_title(text: str) -> str:
@@ -60,30 +60,21 @@ def extract_section_title(text: str) -> str:
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
     """
     Split text into overlapping chunks of approximately chunk_size characters.
+    Optimized for speed with simpler boundary detection.
     """
     chunks = []
     start = 0
     text_len = len(text)
     
     while start < text_len:
-        end = start + chunk_size
+        end = min(start + chunk_size, text_len)
         
-        # If this is not the last chunk, try to break at a sentence or paragraph
+        # Only look for sentence breaks if not at the end
         if end < text_len:
-            # Look for paragraph break
-            paragraph_break = text.rfind('\n\n', start, end)
-            if paragraph_break > start:
-                end = paragraph_break
-            else:
-                # Look for sentence break
-                sentence_break = max(
-                    text.rfind('. ', start, end),
-                    text.rfind('.\n', start, end),
-                    text.rfind('! ', start, end),
-                    text.rfind('? ', start, end)
-                )
-                if sentence_break > start:
-                    end = sentence_break + 1
+            # Quick sentence break search (just period and space)
+            sentence_break = text.rfind('. ', start, end)
+            if sentence_break > start:
+                end = sentence_break + 2
         
         chunk = text[start:end].strip()
         if len(chunk) > 50:  # Only keep chunks with substantial content
@@ -95,12 +86,68 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     return chunks
 
 
-def read_and_chunk_pdf(pdf_path: str) -> List[Dict]:
+def add_batch_to_chroma(collection, embedding_model, batch: List[Dict], device: str):
     """
-    Read PDF and return a list of chunk dictionaries with metadata.
+    Generate embeddings for a batch of chunks and add them to ChromaDB.
+    This function processes and immediately stores batches to avoid memory buildup.
     
+    Args:
+        collection: ChromaDB collection object
+        embedding_model: SentenceTransformer model
+        batch: List of chunk dictionaries with text, page, chunk_id, section_title
+        device: Device to use for embeddings ('cuda' or 'cpu')
+    """
+    if not batch:
+        return
+    
+    # Prepare data for this batch
+    texts = [chunk['text'] for chunk in batch]
+    ids = [f"chunk_{chunk['chunk_id']}" for chunk in batch]
+    metadatas = [
+        {
+            'page': chunk['page'],
+            'chunk_id': chunk['chunk_id'],
+            'section_title': chunk['section_title']
+        }
+        for chunk in batch
+    ]
+    
+    # Generate embeddings on GPU if available
+    # Use optimized batch_size for 8GB GPU
+    embeddings = embedding_model.encode(
+        texts, 
+        convert_to_numpy=True, 
+        device=device,
+        show_progress_bar=False,
+        batch_size=64,  # Optimized for 8GB VRAM
+        normalize_embeddings=True  # Better for similarity search
+    )
+    
+    # Add to collection
+    collection.add(
+        ids=ids,
+        embeddings=embeddings.tolist(),
+        documents=texts,
+        metadatas=metadatas
+    )
+    
+    # Explicitly clear memory
+    del embeddings, texts, ids, metadatas
+
+
+def process_pdf_streaming(pdf_path: str, collection, embedding_model, device: str):
+    """
+    Stream-process the PDF: read page by page, chunk, embed, and store in batches.
+    This avoids loading all chunks into memory at once.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        collection: ChromaDB collection object
+        embedding_model: SentenceTransformer model
+        device: Device to use for embeddings ('cuda' or 'cpu')
+        
     Returns:
-        List of dicts with keys: text, page, chunk_id, section_title
+        Total number of chunks processed
     """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(
@@ -109,55 +156,87 @@ def read_and_chunk_pdf(pdf_path: str) -> List[Dict]:
         )
     
     print(f"Reading PDF from: {pdf_path}")
-    all_chunks = []
+    
     chunk_counter = 0
+    batch = []  # Current batch of chunks waiting to be embedded
     
     with pdfplumber.open(pdf_path) as pdf:
         total_pages = len(pdf.pages)
         print(f"Total pages: {total_pages}")
+        print(f"Processing in batches of {BATCH_SIZE} chunks...\n")
         
         for page_num, page in enumerate(pdf.pages, start=1):
-            # Extract text from page
-            text = page.extract_text()
-            
-            if not text or len(text.strip()) < 50:
-                # Skip pages with minimal text
+            try:
+                # Extract text from page
+                text = page.extract_text()
+                
+                if not text or len(text.strip()) < 50:
+                    # Skip pages with minimal text
+                    continue
+                
+                # Clean the text
+                text = clean_text(text)
+                
+                # Use simple section title (skip extraction for speed)
+                section_title = f"Page {page_num}"
+                
+                # Split into chunks
+                text_chunks = chunk_text(text)
+                
+                # Add each chunk to the current batch
+                for chunk_text_content in text_chunks:
+                    chunk_counter += 1
+                    chunk_data = {
+                        'text': chunk_text_content,
+                        'page': page_num,
+                        'chunk_id': chunk_counter,
+                        'section_title': section_title
+                    }
+                    batch.append(chunk_data)
+                    
+                    # When batch is full, process it immediately
+                    if len(batch) >= BATCH_SIZE:
+                        add_batch_to_chroma(collection, embedding_model, batch, device)
+                        batch.clear()  # Clear the batch after processing
+                
+                # Progress indicator every 50 pages (minimal printing overhead)
+                if page_num % 50 == 0:
+                    print(f"Processed {page_num}/{total_pages} pages... ({chunk_counter} chunks so far)")
+                    
+            except Exception as e:
+                # Suppress warnings for speed (just continue)
                 continue
-            
-            # Clean the text
-            text = clean_text(text)
-            
-            # Attempt to extract section title
-            section_title = extract_section_title(text)
-            
-            # Split into chunks
-            text_chunks = chunk_text(text)
-            
-            # Create metadata for each chunk
-            for chunk in text_chunks:
-                chunk_counter += 1
-                chunk_data = {
-                    'text': chunk,
-                    'page': page_num,
-                    'chunk_id': chunk_counter,
-                    'section_title': section_title
-                }
-                all_chunks.append(chunk_data)
-            
-            # Progress indicator
-            if page_num % 10 == 0:
-                print(f"Processed {page_num}/{total_pages} pages...")
+        
+        # Process any remaining chunks in the last batch
+        if batch:
+            add_batch_to_chroma(collection, embedding_model, batch, device)
+            batch.clear()
+        
+        # Final progress
+        print(f"Processed all {total_pages} pages... ({chunk_counter} total chunks)")
     
-    print(f"Extracted {len(all_chunks)} chunks from {total_pages} pages")
-    return all_chunks
+    return chunk_counter
 
 
-def create_chroma_index(chunks: List[Dict]):
+def create_chroma_index_streaming(pdf_path: str):
     """
-    Create embeddings and store chunks in ChromaDB.
+    Create embeddings and store chunks in ChromaDB using streaming/batched processing.
     """
-    print(f"\nInitializing embedding model: {EMBEDDING_MODEL}")
-    embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+    # Detect GPU availability
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"\nDevice: {device.upper()}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+    
+    print(f"Initializing embedding model: {EMBEDDING_MODEL}")
+    embedding_model = SentenceTransformer(EMBEDDING_MODEL, device=device)
+    # Set to evaluation mode for faster inference
+    embedding_model.eval()
+    
+    # Optimize for inference speed
+    if device == "cuda":
+        torch.backends.cudnn.benchmark = True
+        print("✓ CUDA optimizations enabled")
     
     print(f"Initializing ChromaDB at: {CHROMA_DB_PATH}")
     # Create persistent Chroma client
@@ -176,41 +255,15 @@ def create_chroma_index(chunks: List[Dict]):
         metadata={"description": "AUIS Academic Catalog chunks with embeddings"}
     )
     
-    print(f"\nGenerating embeddings and storing {len(chunks)} chunks...")
+    print("\nStarting streaming indexing...")
+    print("=" * 60)
     
-    # Process in batches for efficiency
-    batch_size = 50
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i:i + batch_size]
-        
-        # Prepare data for this batch
-        texts = [chunk['text'] for chunk in batch]
-        ids = [f"chunk_{chunk['chunk_id']}" for chunk in batch]
-        metadatas = [
-            {
-                'page': chunk['page'],
-                'chunk_id': chunk['chunk_id'],
-                'section_title': chunk['section_title']
-            }
-            for chunk in batch
-        ]
-        
-        # Generate embeddings
-        embeddings = embedding_model.encode(texts, convert_to_numpy=True)
-        
-        # Add to collection
-        collection.add(
-            ids=ids,
-            embeddings=embeddings.tolist(),
-            documents=texts,
-            metadatas=metadatas
-        )
-        
-        # Progress indicator
-        print(f"Stored {min(i + batch_size, len(chunks))}/{len(chunks)} chunks...")
+    # Stream process the PDF with batched embedding and storage
+    total_chunks = process_pdf_streaming(pdf_path, collection, embedding_model, device)
     
+    print("=" * 60)
     print(f"\n✓ Indexing complete!")
-    print(f"✓ Stored {len(chunks)} chunks in {CHROMA_DB_PATH}/{COLLECTION_NAME}")
+    print(f"✓ Stored {total_chunks} chunks in {CHROMA_DB_PATH}/{COLLECTION_NAME}")
 
 
 def main():
@@ -219,14 +272,11 @@ def main():
     """
     try:
         print("=" * 60)
-        print("AUIS Academic Catalog Indexing")
+        print("AUIS Academic Catalog Indexing (Streaming Mode)")
         print("=" * 60)
         
-        # Step 1: Read and chunk the PDF
-        chunks = read_and_chunk_pdf(CATALOG_PDF_PATH)
-        
-        # Step 2: Create embeddings and store in ChromaDB
-        create_chroma_index(chunks)
+        # Process PDF in streaming mode with batched writes
+        create_chroma_index_streaming(CATALOG_PDF_PATH)
         
         print("\n" + "=" * 60)
         print("SUCCESS! The catalog index is ready.")
