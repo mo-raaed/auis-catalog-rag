@@ -16,6 +16,7 @@ import os
 os.environ['USE_TF'] = '0'
 os.environ['USE_TORCH'] = '1'
 
+import time
 import torch
 from typing import List, Dict, Tuple
 from transformers import (
@@ -88,6 +89,26 @@ def initialize_model():
     
     print(f"✓ Model loaded successfully on {device.upper()}!")
     print("=" * 60 + "\n")
+    
+    # Warm-up: run a tiny generation so CUDA kernels are compiled before first user question
+    try:
+        print("Running warm-up generation...")
+        dummy_inputs = tokenizer(
+            "Warm up TinyLlama for AUIS catalog assistant.",
+            return_tensors="pt"
+        ).to(model.device)
+
+        with torch.no_grad():
+            _ = model.generate(
+                input_ids=dummy_inputs["input_ids"],
+                attention_mask=dummy_inputs["attention_mask"],
+                max_new_tokens=5,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+        print("Warm-up generation done.\n")
+    except Exception as e:
+        print(f"Warm-up failed (non-fatal): {e}\n")
 
 
 def initialize_chroma():
@@ -197,7 +218,8 @@ def generate_llm_response(
     
     print(f"Prompt tokens: {inputs['input_ids'].shape[1]}")
     
-    # Generate response
+    # Measure generation time
+    start_time = time.time()
     with torch.no_grad():
         outputs = model.generate(
             input_ids=inputs["input_ids"],
@@ -208,6 +230,8 @@ def generate_llm_response(
             top_p=TOP_P,
             pad_token_id=tokenizer.pad_token_id
         )
+    end_time = time.time()
+    print(f"Generation time in generate_llm_response: {end_time - start_time:.2f} s")
     
     # Decode only the newly generated tokens
     generated = outputs[0][inputs["input_ids"].shape[1]:]

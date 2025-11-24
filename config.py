@@ -17,7 +17,7 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # LLM configuration
 LLM_MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Fast 1.1B model for CPU
-MAX_NEW_TOKENS = 80  # Shorter responses for faster generation with KV cache
+MAX_NEW_TOKENS = 80  # Decent-length answer, not huge
 TEMPERATURE = 0.4  # Balanced for quality and speed
 TOP_P = 0.9
 
