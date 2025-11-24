@@ -10,6 +10,7 @@ chromadb>=0.4.24
 sentence-transformers>=2.6.0
 pdfplumber>=0.11.0
 flask>=3.0.0
+flask-cors>=6.0.0
 
 # Optional (not currently used):
 # bitsandbytes>=0.43.0
