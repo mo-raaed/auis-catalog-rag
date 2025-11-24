@@ -54,7 +54,7 @@ def initialize_model():
     global tokenizer, model
     
     print("\n" + "=" * 60)
-    print("Initializing TinyLlama-1.1B-Chat model...")
+    print("Initializing Phi-3-mini-4k-instruct model...")
     print("=" * 60)
     
     # Determine device
@@ -94,7 +94,7 @@ def initialize_model():
     try:
         print("Running warm-up generation...")
         dummy_inputs = tokenizer(
-            "Warm up TinyLlama for AUIS catalog assistant.",
+            "Warm up Phi-3 for AUIS catalog assistant.",
             return_tensors="pt"
         ).to(model.device)
 
@@ -192,7 +192,7 @@ def generate_llm_response(
     max_new_tokens: int = MAX_NEW_TOKENS
 ) -> str:
     """
-    Generate a response from TinyLlama using plain-text prompting with truncation.
+    Generate a response from Phi-3 using plain-text prompting with truncation.
     
     Args:
         system_prompt: System instructions for the model

@@ -16,9 +16,9 @@ CHUNK_OVERLAP = 50  # overlap between consecutive chunks (reduced for speed)
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # LLM configuration
-LLM_MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Fast 1.1B model for CPU
-MAX_NEW_TOKENS = 80  # Decent-length answer, not huge
-TEMPERATURE = 0.4  # Balanced for quality and speed
+LLM_MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"  # 3.8B parameters for better quality
+MAX_NEW_TOKENS = 120  # Longer for more complete answers
+TEMPERATURE = 0.3  # Lower for more focused responses
 TOP_P = 0.9
 
 # RAG parameters
