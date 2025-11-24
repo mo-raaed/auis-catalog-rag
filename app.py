@@ -228,7 +228,8 @@ def generate_llm_response(
             do_sample=True,
             temperature=TEMPERATURE,
             top_p=TOP_P,
-            pad_token_id=tokenizer.pad_token_id
+            pad_token_id=tokenizer.pad_token_id,
+            use_cache=False  # Disable cache to avoid DynamicCache errors with Phi-3
         )
     end_time = time.time()
     print(f"Generation time in generate_llm_response: {end_time - start_time:.2f} s")
