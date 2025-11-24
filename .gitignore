@@ -1,0 +1,45 @@
+# .gitignore for AUIS Academic Catalog RAG Project
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments (in case you use one later)
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data and models
+data/*.pdf
+chroma_db/
+*.db
+*.sqlite
+
+# Hugging Face cache (optional - comment out if you want to track it)
+# .cache/
+
+# Gradio temporary files
+gradio_cached_examples/
+flagged/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
