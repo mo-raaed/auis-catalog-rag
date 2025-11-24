@@ -22,7 +22,7 @@ TEMPERATURE = 0.4  # Balanced for quality and speed
 TOP_P = 0.9
 
 # RAG parameters
-TOP_K_RETRIEVAL = 2  # number of relevant chunks to retrieve (reduced for speed)
+TOP_K_RETRIEVAL = 1  # number of relevant chunks to retrieve (reduced for speed)
 
 # Gradio UI
 APP_TITLE = "AUIS Academic Catalog Assistant"

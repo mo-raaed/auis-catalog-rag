@@ -75,11 +75,11 @@ def initialize_model():
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
-    print(f"Loading model (float32 for CPU)...")
+    print(f"Loading model ({'float16 for GPU' if device == 'cuda' else 'float32 for CPU'})...")
     model = AutoModelForCausalLM.from_pretrained(
         LLM_MODEL_NAME,
         trust_remote_code=True,
-        torch_dtype=torch.float32  # Simple float32 for CPU
+        dtype=torch.float16 if device == "cuda" else torch.float32
     )
     
     # Move model to device
