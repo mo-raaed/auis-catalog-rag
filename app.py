@@ -48,12 +48,12 @@ embedding_model = None
 
 def initialize_model():
     """
-    Load Phi-3-mini-4k-instruct model without quantization for reliable CPU/GPU performance.
+    Load TinyLlama-1.1B-Chat model for fast CPU inference.
     """
     global tokenizer, model
     
     print("\n" + "=" * 60)
-    print("Initializing Phi-3-mini-4k-instruct model...")
+    print("Initializing TinyLlama-1.1B-Chat model...")
     print("=" * 60)
     
     # Determine device
@@ -63,7 +63,7 @@ def initialize_model():
         print(f"✓ CUDA available: {torch.cuda.get_device_name(0)}")
         print(f"✓ CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     else:
-        print("⚠ Running on CPU (slower but more reliable)")
+        print("⚠ Running on CPU (optimized for TinyLlama)")
     
     print(f"\nLoading tokenizer from: {LLM_MODEL_NAME}")
     tokenizer = AutoTokenizer.from_pretrained(
@@ -75,21 +75,16 @@ def initialize_model():
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
-    print(f"Loading model (standard precision, no quantization)...")
+    print(f"Loading model (float32 for CPU)...")
     model = AutoModelForCausalLM.from_pretrained(
         LLM_MODEL_NAME,
         trust_remote_code=True,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32
+        torch_dtype=torch.float32  # Simple float32 for CPU
     )
     
     # Move model to device
     model.to(device)
     model.eval()
-    
-    # Completely disable the new cache system to avoid StaticCache/DynamicCache bugs
-    if hasattr(model, "generation_config"):
-        model.generation_config.cache_implementation = None
-        model.generation_config.use_cache = False
     
     print(f"✓ Model loaded successfully on {device.upper()}!")
     print("=" * 60 + "\n")
@@ -176,7 +171,7 @@ def generate_llm_response(
     max_new_tokens: int = MAX_NEW_TOKENS
 ) -> str:
     """
-    Generate a response from the LLM using model.generate() for efficient inference.
+    Generate a response from TinyLlama using model.generate().
     
     Args:
         system_prompt: System instructions for the model
@@ -197,10 +192,10 @@ def generate_llm_response(
         return_tensors="pt"
     ).to(model.device)
     
-    # Create attention mask to avoid warnings
+    # Create attention mask
     attention_mask = torch.ones_like(input_ids, dtype=torch.long).to(model.device)
     
-    # Generate response using model.generate() without cache
+    # Generate response
     with torch.no_grad():
         outputs = model.generate(
             input_ids=input_ids,
@@ -209,16 +204,14 @@ def generate_llm_response(
             do_sample=True,
             temperature=TEMPERATURE,
             top_p=TOP_P,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            use_cache=False  # Force no cache to avoid StaticCache/DynamicCache bugs
+            pad_token_id=tokenizer.pad_token_id
         )
     
     # Decode only the newly generated tokens
     generated = outputs[0][input_ids.shape[1]:]
-    response = tokenizer.decode(generated, skip_special_tokens=True)
+    response = tokenizer.decode(generated, skip_special_tokens=True).strip()
     
-    return response.strip()
+    return response
 
 
 def answer_question(user_message: str, chat_history: List[List[str]]) -> str:
