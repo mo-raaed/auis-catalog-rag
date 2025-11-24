@@ -105,6 +105,7 @@ def initialize_model():
                 max_new_tokens=5,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
+                use_cache=False  # Disable cache for Phi-3
             )
         print("Warm-up generation done.\n")
     except Exception as e:
