@@ -307,6 +307,14 @@ If something is missing from the context, say that you don't know and suggest th
         return f"Sorry, I encountered an error while generating the answer: {str(e)}"
 
 
+def qa_single_turn(message: str) -> str:
+    """
+    Simple wrapper for single-turn Q&A without chat history.
+    Useful for a stable Gradio Interface.
+    """
+    return answer_question(message, [])
+
+
 def gradio_chat_fn(message: str, history: List[List[str]]) -> str:
     """
     Gradio chat function wrapper.
@@ -330,30 +338,32 @@ def main():
         initialize_model()
         initialize_chroma()
         
-        # Create Gradio interface
+        # Create Gradio interface (simple single-turn)
         print("=" * 60)
-        print("Launching Gradio interface...")
+        print("Launching Gradio interface (single-turn)...")
         print("=" * 60 + "\n")
         
-        demo = gr.ChatInterface(
-            fn=gradio_chat_fn,
+        demo = gr.Interface(
+            fn=qa_single_turn,
+            inputs=gr.Textbox(label="Your question about AUIS policies"),
+            outputs=gr.Textbox(label="Answer"),
             title=APP_TITLE,
             description=APP_DESCRIPTION,
             examples=[
-                "What happens if my GPA drops below 2.0?",
-                "How many times can I withdraw from a course?",
-                "What are the credit hour requirements for graduation?",
-                "What is the academic probation policy?",
-                "Can I take more than 18 credits in a semester?"
+                ["What happens if my GPA drops below 2.0?"],
+                ["How many times can I withdraw from a course?"],
+                ["What are the credit hour requirements for graduation?"],
+                ["What is the academic probation policy?"],
+                ["Can I take more than 18 credits in a semester?"]
             ]
         )
         
         # Launch the app
         demo.launch(
-            share=False,  # Set to True if you want a public link
+            share=False,
             server_name="127.0.0.1",
-            server_port=7864,  # Use different port to avoid conflicts
-            inbrowser=True  # Auto-open in browser
+            server_port=7864,
+            inbrowser=True
         )
         
     except FileNotFoundError as e:
