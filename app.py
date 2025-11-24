@@ -196,20 +196,36 @@ def generate_llm_response(
     # Create attention mask
     attention_mask = torch.ones_like(input_ids).to(model.device)
     
-    # Generate response with optimized settings for speed
+    # Generate response with cache disabled to avoid DynamicCache errors
+    # Use model's forward pass in a loop for compatibility
     with torch.no_grad():
-        outputs = model.generate(
-            input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,  # Greedy decoding is faster
-            pad_token_id=tokenizer.eos_token_id,
-            num_beams=1,  # No beam search for speed
-            early_stopping=True
-        )
+        # Simple generation without model.generate() to avoid cache issues
+        generated_ids = input_ids[0].tolist()
+        
+        for _ in range(max_new_tokens):
+            # Get model predictions
+            curr_input_ids = torch.tensor([generated_ids]).to(model.device)
+            curr_attention_mask = torch.ones_like(curr_input_ids).to(model.device)
+            
+            outputs = model(
+                input_ids=curr_input_ids,
+                attention_mask=curr_attention_mask,
+                use_cache=False
+            )
+            
+            # Get next token (greedy)
+            next_token_logits = outputs.logits[0, -1, :]
+            next_token = torch.argmax(next_token_logits).item()
+            
+            # Check for EOS
+            if next_token == tokenizer.eos_token_id:
+                break
+            
+            generated_ids.append(next_token)
     
-    # Decode response
-    response = tokenizer.decode(outputs[0][input_ids.shape[1]:], skip_special_tokens=True)
+    # Decode only the generated part
+    generated_tokens = generated_ids[len(input_ids[0]):]
+    response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
     
     return response.strip()
 
@@ -315,7 +331,7 @@ def main():
         demo.launch(
             share=False,  # Set to True if you want a public link
             server_name="127.0.0.1",
-            server_port=7861,  # Use different port to avoid conflicts
+            server_port=7864,  # Use different port to avoid conflicts
             inbrowser=True  # Auto-open in browser
         )
         
