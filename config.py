@@ -17,8 +17,8 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # LLM configuration
 LLM_MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
-MAX_NEW_TOKENS = 200  # Reduced for faster generation
-TEMPERATURE = 0.7
+MAX_NEW_TOKENS = 160  # Modest limit for reasonable response time
+TEMPERATURE = 0.3
 TOP_P = 0.9
 
 # RAG parameters

@@ -20,8 +20,7 @@ import torch
 from typing import List, Dict, Tuple
 from transformers import (
     AutoTokenizer,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig
+    AutoModelForCausalLM
 )
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -49,7 +48,7 @@ embedding_model = None
 
 def initialize_model():
     """
-    Load Phi-3-mini-4k-instruct model in 4-bit quantization on GPU.
+    Load Phi-3-mini-4k-instruct model without quantization for reliable CPU/GPU performance.
     """
     global tokenizer, model
     
@@ -57,20 +56,14 @@ def initialize_model():
     print("Initializing Phi-3-mini-4k-instruct model...")
     print("=" * 60)
     
-    # Check for CUDA availability
-    if not torch.cuda.is_available():
-        print("⚠ WARNING: CUDA not available. Model will run on CPU (very slow).")
-    else:
+    # Determine device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if device == "cuda":
         print(f"✓ CUDA available: {torch.cuda.get_device_name(0)}")
         print(f"✓ CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-    
-    # Configure 4-bit quantization
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16
-    )
+    else:
+        print("⚠ Running on CPU (slower but more reliable)")
     
     print(f"\nLoading tokenizer from: {LLM_MODEL_NAME}")
     tokenizer = AutoTokenizer.from_pretrained(
@@ -78,16 +71,22 @@ def initialize_model():
         trust_remote_code=True
     )
     
-    print(f"Loading model in 4-bit quantization...")
+    # Ensure we have a pad token
+    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    print(f"Loading model (standard precision, no quantization)...")
     model = AutoModelForCausalLM.from_pretrained(
         LLM_MODEL_NAME,
-        quantization_config=bnb_config,
-        device_map="auto",
         trust_remote_code=True,
-        torch_dtype=torch.float16
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32
     )
     
-    print("✓ Model loaded successfully!")
+    # Move model to device
+    model.to(device)
+    model.eval()
+    
+    print(f"✓ Model loaded successfully on {device.upper()}!")
     print("=" * 60 + "\n")
 
 
@@ -172,7 +171,7 @@ def generate_llm_response(
     max_new_tokens: int = MAX_NEW_TOKENS
 ) -> str:
     """
-    Generate a response from the LLM using the chat template.
+    Generate a response from the LLM using model.generate() for efficient inference.
     
     Args:
         system_prompt: System instructions for the model
@@ -193,39 +192,21 @@ def generate_llm_response(
         return_tensors="pt"
     ).to(model.device)
     
-    # Create attention mask
-    attention_mask = torch.ones_like(input_ids).to(model.device)
-    
-    # Generate response with cache disabled to avoid DynamicCache errors
-    # Use model's forward pass in a loop for compatibility
+    # Generate response using model.generate() with KV cache for speed
     with torch.no_grad():
-        # Simple generation without model.generate() to avoid cache issues
-        generated_ids = input_ids[0].tolist()
-        
-        for _ in range(max_new_tokens):
-            # Get model predictions
-            curr_input_ids = torch.tensor([generated_ids]).to(model.device)
-            curr_attention_mask = torch.ones_like(curr_input_ids).to(model.device)
-            
-            outputs = model(
-                input_ids=curr_input_ids,
-                attention_mask=curr_attention_mask,
-                use_cache=False
-            )
-            
-            # Get next token (greedy)
-            next_token_logits = outputs.logits[0, -1, :]
-            next_token = torch.argmax(next_token_logits).item()
-            
-            # Check for EOS
-            if next_token == tokenizer.eos_token_id:
-                break
-            
-            generated_ids.append(next_token)
+        outputs = model.generate(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id
+        )
     
-    # Decode only the generated part
-    generated_tokens = generated_ids[len(input_ids[0]):]
-    response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    # Decode only the newly generated tokens
+    generated = outputs[0][input_ids.shape[1]:]
+    response = tokenizer.decode(generated, skip_special_tokens=True)
     
     return response.strip()
 
