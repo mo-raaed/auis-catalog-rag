@@ -86,14 +86,10 @@ def initialize_model():
     model.to(device)
     model.eval()
     
-    # Work around DynamicCache issues with some transformers versions
+    # Completely disable the new cache system to avoid StaticCache/DynamicCache bugs
     if hasattr(model, "generation_config"):
-        try:
-            # Try to use static cache instead of DynamicCache
-            model.generation_config.cache_implementation = "static"
-        except (AttributeError, Exception):
-            # Fallback: disable cache entirely for reliability
-            model.generation_config.use_cache = False
+        model.generation_config.cache_implementation = None
+        model.generation_config.use_cache = False
     
     print(f"✓ Model loaded successfully on {device.upper()}!")
     print("=" * 60 + "\n")
@@ -204,12 +200,7 @@ def generate_llm_response(
     # Create attention mask to avoid warnings
     attention_mask = torch.ones_like(input_ids, dtype=torch.long).to(model.device)
     
-    # Determine cache setting (avoid DynamicCache issues)
-    use_cache_value = False  # Safe default
-    if hasattr(model, "generation_config") and hasattr(model.generation_config, "use_cache"):
-        use_cache_value = model.generation_config.use_cache
-    
-    # Generate response using model.generate()
+    # Generate response using model.generate() without cache
     with torch.no_grad():
         outputs = model.generate(
             input_ids=input_ids,
@@ -220,7 +211,7 @@ def generate_llm_response(
             top_p=TOP_P,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            use_cache=use_cache_value
+            use_cache=False  # Force no cache to avoid StaticCache/DynamicCache bugs
         )
     
     # Decode only the newly generated tokens
