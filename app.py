@@ -295,17 +295,35 @@ If something is missing from the context, say that you don't know and suggest th
     
     conversation.append({"role": "user", "content": current_user_content})
     
-    # Step 5: Generate response
-    # Keep only the last user turn (which has the context + question)
-    conversation_for_llm = [conversation[-1]]
+    # Step 5: Generate response with conversation history
+    # Include full conversation history for multi-turn context
+    # Truncate if needed to stay within token limit
+    conversation_for_llm = conversation
     
+    # Count approximate tokens (rough estimate: 1 token ≈ 4 chars)
+    total_chars = sum(len(msg["content"]) for msg in conversation_for_llm)
+    approx_tokens = total_chars // 4
+    max_history_tokens = 3000  # Leave room for system prompt + generation
+    
+    # If conversation is too long, keep only recent turns
+    if approx_tokens > max_history_tokens:
+        print(f"Conversation too long (~{approx_tokens} tokens), truncating to recent turns...")
+        # Keep system context in current turn, drop older turns
+        conversation_for_llm = [conversation[-1]]  # Just current turn with context
+    
+    print(f"Sending {len(conversation_for_llm)} turns to LLM...")
     print("Calling generate_llm_response...")
     try:
         answer = generate_llm_response(system_prompt, conversation_for_llm, max_new_tokens=MAX_NEW_TOKENS)
         print("Generation done.")
         return answer
     except Exception as e:
-        print("Generation error:", e)
+        print("=" * 80)
+        print("GENERATION ERROR:")
+        print("=" * 80)
+        import traceback
+        traceback.print_exc()
+        print("=" * 80)
         return f"Sorry, I encountered an error while generating the answer: {str(e)}"
 
 
