@@ -17,6 +17,7 @@ os.environ['USE_TF'] = '0'
 os.environ['USE_TORCH'] = '1'
 
 import time
+import re
 import torch
 from typing import List, Dict, Tuple
 from transformers import (
@@ -47,69 +48,66 @@ chroma_collection = None
 embedding_model = None
 
 
+def clean_answer(text: str) -> str:
+    """
+    Post-process the model output to remove any leaked control markers.
+    """
+    # Drop any line that starts with '==='
+    lines = []
+    for line in text.splitlines():
+        if line.strip().startswith("==="):
+            continue
+        if "<CATALOG>" in line or "</CATALOG>" in line:
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines)
+    
+    # Also remove any stray fragments like '=== CATALOG EXCER'
+    cleaned = re.sub(r"===\s*CATALOG.*", "", cleaned)
+    
+    return cleaned.strip()
+
+
 def initialize_model():
     """
-    Load TinyLlama-1.1B-Chat model for fast CPU inference.
+    Load TinyLlama-1.1B-Chat model.
     """
     global tokenizer, model
     
     print("\n" + "=" * 60)
-    print("Initializing Phi-3-mini-4k-instruct model...")
+    print(f"Initializing {LLM_MODEL_NAME}...")
     print("=" * 60)
     
     # Determine device
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"torch.cuda.is_available() = {torch.cuda.is_available()}")
     
-    if device == "cuda":
-        print(f"✓ CUDA available: {torch.cuda.get_device_name(0)}")
-        print(f"✓ CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-    else:
-        print("⚠ Running on CPU (optimized for TinyLlama)")
-    
-    print(f"\nLoading tokenizer from: {LLM_MODEL_NAME}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        LLM_MODEL_NAME,
-        trust_remote_code=True
-    )
+    # Load tokenizer
+    print(f"Loading tokenizer from: {LLM_MODEL_NAME}")
+    tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_NAME, trust_remote_code=True)
     
     # Ensure we have a pad token
-    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+    if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
-    print(f"Loading model ({'float16 for GPU' if device == 'cuda' else 'float32 for CPU'})...")
+    # Load model
+    print(f"Loading model...")
+    torch_dtype = torch.float16 if device == "cuda" else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         LLM_MODEL_NAME,
         trust_remote_code=True,
-        dtype=torch.float16 if device == "cuda" else torch.float32
+        torch_dtype=torch_dtype
     )
     
-    # Move model to device
+    # Move model to device and set to eval mode
     model.to(device)
     model.eval()
     
-    print(f"✓ Model loaded successfully on {device.upper()}!")
+    # Print diagnostics
+    print(f"Model device (first param): {next(model.parameters()).device}")
+    print(f"Model dtype (first param): {next(model.parameters()).dtype}")
+    print(f"✓ Model loaded successfully!")
     print("=" * 60 + "\n")
-    
-    # Warm-up: run a tiny generation so CUDA kernels are compiled before first user question
-    try:
-        print("Running warm-up generation...")
-        dummy_inputs = tokenizer(
-            "Warm up Phi-3 for AUIS catalog assistant.",
-            return_tensors="pt"
-        ).to(model.device)
-
-        with torch.no_grad():
-            _ = model.generate(
-                input_ids=dummy_inputs["input_ids"],
-                attention_mask=dummy_inputs["attention_mask"],
-                max_new_tokens=5,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-                use_cache=False  # Disable cache for Phi-3
-            )
-        print("Warm-up generation done.\n")
-    except Exception as e:
-        print(f"Warm-up failed (non-fatal): {e}\n")
 
 
 def initialize_chroma():
@@ -193,7 +191,7 @@ def generate_llm_response(
     max_new_tokens: int = MAX_NEW_TOKENS
 ) -> str:
     """
-    Generate a response from Phi-3 using plain-text prompting with truncation.
+    Generate a response using plain-text prompting with truncation.
     
     Args:
         system_prompt: System instructions for the model
@@ -214,13 +212,17 @@ def generate_llm_response(
         prompt_text,
         return_tensors="pt",
         truncation=True,
-        max_length=1024  # keep total input reasonably small
-    ).to(model.device)
+        max_length=1024
+    )
+    
+    # Move to model device
+    inputs = inputs.to(model.device)
     
     print(f"Prompt tokens: {inputs['input_ids'].shape[1]}")
+    print(f"Generate using device={next(model.parameters()).device}, dtype={next(model.parameters()).dtype}")
     
-    # Measure generation time
-    start_time = time.time()
+    # Measure generation time with high precision
+    start_time = time.perf_counter()
     with torch.no_grad():
         outputs = model.generate(
             input_ids=inputs["input_ids"],
@@ -229,10 +231,9 @@ def generate_llm_response(
             do_sample=True,
             temperature=TEMPERATURE,
             top_p=TOP_P,
-            pad_token_id=tokenizer.pad_token_id,
-            use_cache=False  # Disable cache to avoid DynamicCache errors with Phi-3
+            pad_token_id=tokenizer.pad_token_id
         )
-    end_time = time.time()
+    end_time = time.perf_counter()
     print(f"Generation time in generate_llm_response: {end_time - start_time:.2f} s")
     
     # Decode only the newly generated tokens
@@ -263,16 +264,20 @@ def answer_question(user_message: str, chat_history: List[List[str]]) -> str:
     combined_context = retrieval_result['combined_context']
     
     # Step 2: Define system prompt
-    system_prompt = """You are an AI assistant helping students at the American University of Iraq, Sulaimani (AUIS).
-You are given excerpts from the official AUIS Academic Catalog.
+    system_prompt = """You are a friendly AI assistant helping students at the American University of Iraq, Sulaimani (AUIS).
 
-Your tasks:
-- Use ONLY the provided catalog excerpts to answer questions.
-- Explain the policies in clear, simple language suitable for undergraduate students.
-- Preserve important details like GPA thresholds, number of warnings, credit limits, and consequences.
-- When possible, mention which page or section the information came from.
-- If the catalog does not clearly answer the question, say so and suggest the student contact the Registrar or Academic Advising for confirmation.
-- Do NOT invent new AUIS policies or guess about things not shown in the catalog context."""
+You have two modes of operation:
+
+1) General chat:
+   - If the student asks about everyday topics (life, study tips, feelings, etc.), chat naturally and be helpful.
+   - You can use your general knowledge in this case.
+
+2) AUIS catalog questions:
+   - If the question is about AUIS rules, policies, academic standing, GPA, warnings, credits, majors, minors, or graduation requirements, you MUST use the AUIS Academic Catalog excerpts provided to you.
+   - Explain the rules in clear, simple language.
+   - Preserve important details (GPA thresholds, number of warnings, credit limits, consequences, deadlines, etc.).
+   - Answer in your own words. Do not copy long sentences from the catalog.
+   - Never invent new AUIS rules. If the excerpts do NOT contain enough information, say you are not completely sure and suggest contacting the Registrar or Academic Advising for confirmation."""
     
     # Step 3: Build conversation history
     conversation = []
@@ -282,16 +287,30 @@ Your tasks:
         conversation.append({"role": "user", "content": user_msg})
         conversation.append({"role": "assistant", "content": assistant_msg})
     
-    # Step 4: Add current turn with context
-    current_user_content = f"""CONTEXT (excerpts from the AUIS Academic Catalog):
+    # Step 4: Add current turn with stricter catalog-only prompt
+    current_user_content = f"""You are answering a question about AUIS.
 
+Here are the only texts you are allowed to use about AUIS policies and programs:
+
+<CATALOG>
 {combined_context}
+</CATALOG>
 
-STUDENT QUESTION:
+Student question:
 {user_message}
 
-Using only the context above, answer the student's question in simple, clear language.
-If something is missing from the context, say that you don't know and suggest they contact the university for clarification."""
+CRITICAL RULES:
+
+1. Treat everything inside <CATALOG> as the **only source of truth** about AUIS.
+2. If the student asks for a **list** (for example: all minors, all majors, all requirements):
+   - You may list **only the items that literally appear in <CATALOG>**.
+   - If you are not sure the list is complete, say:
+     "From the excerpts I can see the following: ... For a complete and up-to-date list, please check the full Academic Catalog or contact the Registrar."
+3. Never invent AUIS programs, minors, rules, or numbers that are **not clearly present** in <CATALOG>, even if they sound typical for other universities.
+4. Do **not** mention the words "catalog", "context", or "<CATALOG>" in your answer.
+5. If <CATALOG> does not give enough information to answer confidently, say that you are not completely sure and recommend that the student check with the Registrar or Academic Advising.
+
+Now write a clear, student-friendly answer to the question above following these rules."""
     
     conversation.append({"role": "user", "content": current_user_content})
     
@@ -308,13 +327,17 @@ If something is missing from the context, say that you don't know and suggest th
     # If conversation is too long, keep only recent turns
     if approx_tokens > max_history_tokens:
         print(f"Conversation too long (~{approx_tokens} tokens), truncating to recent turns...")
-        # Keep system context in current turn, drop older turns
-        conversation_for_llm = [conversation[-1]]  # Just current turn with context
+        # Keep last 3 turns to maintain some context
+        conversation_for_llm = conversation[-3:] if len(conversation) >= 3 else conversation
     
     print(f"Sending {len(conversation_for_llm)} turns to LLM...")
     print("Calling generate_llm_response...")
     try:
         answer = generate_llm_response(system_prompt, conversation_for_llm, max_new_tokens=MAX_NEW_TOKENS)
+        
+        # Apply comprehensive cleanup to remove leaked markers
+        answer = clean_answer(answer)
+        
         print("Generation done.")
         return answer
     except Exception as e:

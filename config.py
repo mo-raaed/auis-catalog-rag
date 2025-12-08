@@ -16,13 +16,13 @@ CHUNK_OVERLAP = 50  # overlap between consecutive chunks (reduced for speed)
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # LLM configuration
-LLM_MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"  # 3.8B parameters for better quality
-MAX_NEW_TOKENS = 120  # Longer for more complete answers
+LLM_MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # 1.1B parameters for speed
+MAX_NEW_TOKENS = 200  # Allow complete responses
 TEMPERATURE = 0.3  # Lower for more focused responses
 TOP_P = 0.9
 
 # RAG parameters
-TOP_K_RETRIEVAL = 1  # number of relevant chunks to retrieve (reduced for speed)
+TOP_K_RETRIEVAL = 3  # number of relevant chunks to retrieve (increased for better coverage)
 
 # Gradio UI
 APP_TITLE = "AUIS Academic Catalog Assistant"
