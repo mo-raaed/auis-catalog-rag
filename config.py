@@ -23,6 +23,7 @@ TOP_P = 0.9
 
 # RAG parameters
 TOP_K_RETRIEVAL = 3  # number of relevant chunks to retrieve (increased for better coverage)
+SIMILARITY_THRESHOLD = 0.45  # max distance for "good match" (smaller = more similar)
 
 # Gradio UI
 APP_TITLE = "AUIS Academic Catalog Assistant"

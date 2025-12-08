@@ -183,20 +183,32 @@ def retrieve_context(query: str, k: int = TOP_K_RETRIEVAL) -> Dict:
         k: Number of chunks to retrieve
     
     Returns:
-        Dictionary with 'combined_context' (str) and 'sources' (list of metadata)
+        Dictionary with 'combined_context' (str), 'sources' (list), and 'has_good_match' (bool)
     """
+    from config import SIMILARITY_THRESHOLD
+    
     # Generate query embedding
     query_embedding = embedding_model.encode(query, convert_to_numpy=True)
     
-    # Query ChromaDB
+    # Query ChromaDB with distances
     results = chroma_collection.query(
         query_embeddings=[query_embedding.tolist()],
-        n_results=k
+        n_results=k,
+        include=["documents", "metadatas", "distances"]
     )
     
-    # Extract documents and metadata
+    # Extract documents, metadata, and distances
     documents = results['documents'][0]  # List of chunk texts
     metadatas = results['metadatas'][0]  # List of metadata dicts
+    distances = results.get('distances', [[]])[0]  # List of distances
+    
+    # Compute confidence based on best distance
+    has_good_match = False
+    if distances:
+        best_distance = distances[0]
+        print(f"[RAG] Best distance: {best_distance:.3f}")
+        has_good_match = best_distance <= SIMILARITY_THRESHOLD
+        print(f"[RAG] Good match: {has_good_match}")
     
     # Build combined context string with source citations
     context_parts = []
@@ -211,7 +223,8 @@ def retrieve_context(query: str, k: int = TOP_K_RETRIEVAL) -> Dict:
     
     return {
         'combined_context': combined_context,
-        'sources': metadatas
+        'sources': metadatas,
+        'has_good_match': has_good_match
     }
 
 
@@ -273,16 +286,19 @@ def generate_llm_response(
     return response
 
 
-def is_catalog_question(text: str) -> bool:
+def has_auis_keywords(text: str) -> bool:
     """
-    Determine if the question is about AUIS catalog content.
+    Check if the text contains AUIS academic-related keywords.
+    Used to detect completely off-topic questions.
     """
     text_l = text.lower()
     keywords = [
         "auis", "probation", "gpa", "cgpa", "major", "minor",
         "credit", "credits", "course", "withdraw", "withdrawal",
         "dismissal", "readmission", "catalog", "graduation",
-        "overload", "warning", "semester", "academic standing"
+        "overload", "warning", "semester", "academic standing",
+        "policy", "smoking", "ai", "artificial intelligence",
+        "degree", "requirement", "requirements"
     ]
     return any(k in text_l for k in keywords)
 
@@ -290,6 +306,7 @@ def is_catalog_question(text: str) -> bool:
 def answer_question(user_message: str, chat_history: List[List[str]]) -> str:
     """
     Main RAG function: retrieve context and generate answer.
+    STRICT CATALOG-ONLY MODE: All questions are treated as catalog questions.
     
     Args:
         user_message: Current user question
@@ -301,29 +318,42 @@ def answer_question(user_message: str, chat_history: List[List[str]]) -> str:
     print("\n=== New question ===")
     print("User:", user_message)
     
-    # Step 1: Retrieve relevant context (only for catalog questions)
-    if is_catalog_question(user_message):
-        print("Retrieving context...")
-        retrieval_result = retrieve_context(user_message, k=TOP_K_RETRIEVAL)
-        print("Context retrieved.")
-        combined_context = retrieval_result["combined_context"]
-    else:
-        print("Non-catalog question - skipping retrieval.")
-        retrieval_result = {"combined_context": "", "sources": []}
-        combined_context = ""
+    # Step 1: Always retrieve context from catalog
+    print("[answer_question] Retrieving context from catalog...")
+    retrieval_result = retrieve_context(user_message, k=TOP_K_RETRIEVAL)
+    combined_context = retrieval_result["combined_context"]
+    has_good_match = retrieval_result.get("has_good_match", False)
+    print(f"[answer_question] has_good_match={has_good_match}")
     
-    # Step 2: Define system prompt
+    # Step 2: Check if question is completely off-topic (no AUIS keywords and no good match)
+    if not has_auis_keywords(user_message) and not has_good_match:
+        print("[answer_question] Off-topic question detected (no AUIS keywords, no good match).")
+        return "I can only answer questions about AUIS academic policies and programs based on the official Academic Catalog."
+    
+    # Step 3: If no good retrieval match, return safe fallback
+    if not has_good_match:
+        print("[answer_question] No good match found, returning safe fallback.")
+        return (
+            "I tried to look this up in the parts of the AUIS Academic Catalog I have, "
+            "but I couldn't find a clear answer. Please check the official catalog or "
+            "contact the Registrar or Academic Advising for the exact policy."
+        )
+    
+    # Step 4: Define single strict system prompt (catalog-only)
     system_prompt = """
-You are a friendly AI assistant helping students at the American University of Iraq, Sulaimani (AUIS).
+You are the AUIS Academic Catalog Assistant for the American University of Iraq, Sulaimani (AUIS).
 
-- If the question is about AUIS rules, policies, academic standing, GPA, credits, majors, minors, or graduation requirements, you must base your answer only on the AUIS Academic Catalog excerpts that are provided to you.
-- Explain things in clear, simple language, suitable for undergraduate students.
-- Preserve important details (numbers, thresholds, conditions) that appear in the excerpts.
-- Do not invent new AUIS rules or programs. If you cannot find enough information in the excerpts, say that you are not completely sure and suggest that the student check the full catalog or contact the Registrar or Academic Advising.
-- If the question is not about AUIS, you can answer as a general helpful assistant using your general knowledge.
+CRITICAL RULES:
+- You ONLY answer questions about AUIS academic policies, rules, degree requirements, majors, minors, credits, probation, dismissal, and other information that comes from the AUIS Academic Catalog.
+- You must base every answer ONLY on the catalog excerpts provided between <CATALOG> and </CATALOG>.
+- If the catalog excerpts do not clearly contain the answer, you MUST say you are not sure and tell the student to check the official AUIS Academic Catalog or contact the Registrar or Academic Advising.
+- You must NOT invent new AUIS policies, rules, majors, minors, or programs. If something is not clearly in the excerpts, do NOT guess.
+- You do NOT do casual conversation or general chit-chat. If the question is not about AUIS academics, politely say you can only answer questions about AUIS academic policies and programs.
+
+Answer in clear, simple English suitable for AUIS students.
 """
     
-    # Step 3: Build conversation history
+    # Step 5: Build conversation history
     conversation = []
     
     # Add past turns from chat history
@@ -331,39 +361,14 @@ You are a friendly AI assistant helping students at the American University of I
         conversation.append({"role": "user", "content": user_msg})
         conversation.append({"role": "assistant", "content": assistant_msg})
     
-    # Step 4: Detect list-type questions and build prompt accordingly
-    is_list_question = any(
-        phrase in user_message.lower()
-        for phrase in [
-            "what minors are available",
-            "which minors are offered",
-            "all minors", "list of minors",
-            "what majors", "all majors", "list of majors"
-        ]
-    )
-    
-    if is_list_question:
-        list_instruction = (
-            "If you do not clearly see a list of minors inside <CATALOG>, "
-            "do not guess. Instead say something like: "
-            '"From these excerpts I can see some information about minors, '
-            "but I cannot see a complete list of which minors are offered. "
-            'Please check the full Academic Catalog or contact the Registrar for the full list."'
-        )
-    else:
-        list_instruction = ""
-    
+    # Step 6: Build user content (simple structure)
     current_user_content = f"""
 <CATALOG>
 {combined_context}
 </CATALOG>
 
-Student question:
+Question from the student:
 {user_message}
-
-Using only what you can find inside <CATALOG> about AUIS, answer the student's question in clear, simple language.
-
-{list_instruction}
 """
     
     conversation.append({"role": "user", "content": current_user_content})
@@ -386,29 +391,35 @@ Using only what you can find inside <CATALOG> about AUIS, answer the student's q
     
     print(f"Sending {len(conversation_for_llm)} turns to LLM...")
     print("Calling generate_llm_response...")
+    
     try:
         answer = generate_llm_response(system_prompt, conversation_for_llm, max_new_tokens=MAX_NEW_TOKENS)
-        
-        # Apply comprehensive cleanup to remove leaked markers
-        answer = clean_answer(answer)
-        
-        # Truncate to last complete sentence if we hit token limit
-        answer_before_trunc = answer
-        answer = truncate_to_complete_sentence(answer)
-        
-        if answer != answer_before_trunc:
-            print("[truncate_to_complete_sentence] Truncated trailing partial sentence.")
-        
-        print("Generation done.")
-        return answer
     except Exception as e:
-        print("=" * 80)
-        print("GENERATION ERROR:")
-        print("=" * 80)
+        print(f"[ERROR] generate_llm_response failed: {e}")
         import traceback
         traceback.print_exc()
-        print("=" * 80)
-        return f"Sorry, I encountered an error while generating the answer: {str(e)}"
+        answer = ""
+    
+    # Apply comprehensive cleanup to remove leaked markers
+    answer = clean_answer(answer or "")
+    
+    # Truncate to last complete sentence if we hit token limit
+    answer_before_trunc = answer
+    answer = truncate_to_complete_sentence(answer or "")
+    
+    if answer != answer_before_trunc:
+        print("[truncate_to_complete_sentence] Truncated trailing partial sentence.")
+    
+    # Final safety: never return empty answer
+    if not answer.strip():
+        print("[ERROR] Empty answer generated, returning safe fallback.")
+        return (
+            "Sorry, I couldn't generate a reliable answer for that. "
+            "Please check the official catalog or contact the Registrar or Academic Advising."
+        )
+    
+    print("Generation done.")
+    return answer
 
 
 def qa_single_turn(message: str) -> str:
