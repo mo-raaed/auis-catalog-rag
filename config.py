@@ -17,8 +17,8 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # LLM configuration
 LLM_MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # 1.1B parameters for speed
-MAX_NEW_TOKENS = 200  # Allow complete responses
-TEMPERATURE = 0.3  # Lower for more focused responses
+MAX_NEW_TOKENS = 256  # Allow complete responses
+TEMPERATURE = 0.2  # Lower for more deterministic, focused responses
 TOP_P = 0.9
 
 # RAG parameters

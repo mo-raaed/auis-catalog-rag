@@ -68,6 +68,36 @@ def clean_answer(text: str) -> str:
     return cleaned.strip()
 
 
+def truncate_to_complete_sentence(text: str) -> str:
+    """
+    Truncate the given text to the last complete sentence.
+
+    A 'complete sentence' is defined heuristically as any text ending
+    with '.', '!' or '?' followed by either whitespace or end of string.
+    If no such terminator is found, the original text is returned.
+    """
+    if not text:
+        return text
+
+    # Find the last sentence-ending punctuation
+    match = None
+    for m in re.finditer(r"[.!?](?=\s|$)", text):
+        match = m
+
+    if match is None:
+        # No sentence boundary found, return original
+        return text.strip()
+
+    end_idx = match.end()
+
+    # Basic safety: avoid chopping off almost everything
+    # (only truncate if we keep at least 40% of the text)
+    if end_idx < len(text) * 0.4:
+        return text.strip()
+
+    return text[:end_idx].strip()
+
+
 def initialize_model():
     """
     Load TinyLlama-1.1B-Chat model.
@@ -243,6 +273,20 @@ def generate_llm_response(
     return response
 
 
+def is_catalog_question(text: str) -> bool:
+    """
+    Determine if the question is about AUIS catalog content.
+    """
+    text_l = text.lower()
+    keywords = [
+        "auis", "probation", "gpa", "cgpa", "major", "minor",
+        "credit", "credits", "course", "withdraw", "withdrawal",
+        "dismissal", "readmission", "catalog", "graduation",
+        "overload", "warning", "semester", "academic standing"
+    ]
+    return any(k in text_l for k in keywords)
+
+
 def answer_question(user_message: str, chat_history: List[List[str]]) -> str:
     """
     Main RAG function: retrieve context and generate answer.
@@ -257,27 +301,27 @@ def answer_question(user_message: str, chat_history: List[List[str]]) -> str:
     print("\n=== New question ===")
     print("User:", user_message)
     
-    # Step 1: Retrieve relevant context
-    print("Retrieving context...")
-    retrieval_result = retrieve_context(user_message, k=TOP_K_RETRIEVAL)
-    print("Context retrieved.")
-    combined_context = retrieval_result['combined_context']
+    # Step 1: Retrieve relevant context (only for catalog questions)
+    if is_catalog_question(user_message):
+        print("Retrieving context...")
+        retrieval_result = retrieve_context(user_message, k=TOP_K_RETRIEVAL)
+        print("Context retrieved.")
+        combined_context = retrieval_result["combined_context"]
+    else:
+        print("Non-catalog question - skipping retrieval.")
+        retrieval_result = {"combined_context": "", "sources": []}
+        combined_context = ""
     
     # Step 2: Define system prompt
-    system_prompt = """You are a friendly AI assistant helping students at the American University of Iraq, Sulaimani (AUIS).
+    system_prompt = """
+You are a friendly AI assistant helping students at the American University of Iraq, Sulaimani (AUIS).
 
-You have two modes of operation:
-
-1) General chat:
-   - If the student asks about everyday topics (life, study tips, feelings, etc.), chat naturally and be helpful.
-   - You can use your general knowledge in this case.
-
-2) AUIS catalog questions:
-   - If the question is about AUIS rules, policies, academic standing, GPA, warnings, credits, majors, minors, or graduation requirements, you MUST use the AUIS Academic Catalog excerpts provided to you.
-   - Explain the rules in clear, simple language.
-   - Preserve important details (GPA thresholds, number of warnings, credit limits, consequences, deadlines, etc.).
-   - Answer in your own words. Do not copy long sentences from the catalog.
-   - Never invent new AUIS rules. If the excerpts do NOT contain enough information, say you are not completely sure and suggest contacting the Registrar or Academic Advising for confirmation."""
+- If the question is about AUIS rules, policies, academic standing, GPA, credits, majors, minors, or graduation requirements, you must base your answer only on the AUIS Academic Catalog excerpts that are provided to you.
+- Explain things in clear, simple language, suitable for undergraduate students.
+- Preserve important details (numbers, thresholds, conditions) that appear in the excerpts.
+- Do not invent new AUIS rules or programs. If you cannot find enough information in the excerpts, say that you are not completely sure and suggest that the student check the full catalog or contact the Registrar or Academic Advising.
+- If the question is not about AUIS, you can answer as a general helpful assistant using your general knowledge.
+"""
     
     # Step 3: Build conversation history
     conversation = []
@@ -287,11 +331,29 @@ You have two modes of operation:
         conversation.append({"role": "user", "content": user_msg})
         conversation.append({"role": "assistant", "content": assistant_msg})
     
-    # Step 4: Add current turn with stricter catalog-only prompt
-    current_user_content = f"""You are answering a question about AUIS.
-
-Here are the only texts you are allowed to use about AUIS policies and programs:
-
+    # Step 4: Detect list-type questions and build prompt accordingly
+    is_list_question = any(
+        phrase in user_message.lower()
+        for phrase in [
+            "what minors are available",
+            "which minors are offered",
+            "all minors", "list of minors",
+            "what majors", "all majors", "list of majors"
+        ]
+    )
+    
+    if is_list_question:
+        list_instruction = (
+            "If you do not clearly see a list of minors inside <CATALOG>, "
+            "do not guess. Instead say something like: "
+            '"From these excerpts I can see some information about minors, '
+            "but I cannot see a complete list of which minors are offered. "
+            'Please check the full Academic Catalog or contact the Registrar for the full list."'
+        )
+    else:
+        list_instruction = ""
+    
+    current_user_content = f"""
 <CATALOG>
 {combined_context}
 </CATALOG>
@@ -299,18 +361,10 @@ Here are the only texts you are allowed to use about AUIS policies and programs:
 Student question:
 {user_message}
 
-CRITICAL RULES:
+Using only what you can find inside <CATALOG> about AUIS, answer the student's question in clear, simple language.
 
-1. Treat everything inside <CATALOG> as the **only source of truth** about AUIS.
-2. If the student asks for a **list** (for example: all minors, all majors, all requirements):
-   - You may list **only the items that literally appear in <CATALOG>**.
-   - If you are not sure the list is complete, say:
-     "From the excerpts I can see the following: ... For a complete and up-to-date list, please check the full Academic Catalog or contact the Registrar."
-3. Never invent AUIS programs, minors, rules, or numbers that are **not clearly present** in <CATALOG>, even if they sound typical for other universities.
-4. Do **not** mention the words "catalog", "context", or "<CATALOG>" in your answer.
-5. If <CATALOG> does not give enough information to answer confidently, say that you are not completely sure and recommend that the student check with the Registrar or Academic Advising.
-
-Now write a clear, student-friendly answer to the question above following these rules."""
+{list_instruction}
+"""
     
     conversation.append({"role": "user", "content": current_user_content})
     
@@ -337,6 +391,13 @@ Now write a clear, student-friendly answer to the question above following these
         
         # Apply comprehensive cleanup to remove leaked markers
         answer = clean_answer(answer)
+        
+        # Truncate to last complete sentence if we hit token limit
+        answer_before_trunc = answer
+        answer = truncate_to_complete_sentence(answer)
+        
+        if answer != answer_before_trunc:
+            print("[truncate_to_complete_sentence] Truncated trailing partial sentence.")
         
         print("Generation done.")
         return answer
